@@ -1,0 +1,414 @@
+---
+title: "BIOST 2079: Introduction to Stat Learning -- Final Project"
+subtitle: "Data Wrangling, Cleaning, & EDA"
+author: "Dominic DiSanto & Greg Procario"
+date: "9/20/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: '5'
+    code_folding: show
+---
+
+## Preamble
+
+The goal of this project is to predict septic shock events among a population of patients who meet criteria and are diagnosed with sepsis or septicemia. The motivation of this project being that among patients in a critically ill/injured population who are septic, how can a clinician identify/predict patients who will specifically enter septic shock and be at further increased, acute risk for organ failure and mortality. Our project uses a prospective, observational cohort study dataset from Beth Israel Deaconess Medical Center in Boston, MA from 2001-2012  ([MIMIC-III](https://www.nature.com/articles/sdata201635)), applying data elements including ICD-9 diagnoses codes (to determine our outcome and diseases of interest for prediction) and demographic patient characteristics.   
+  
+Inclusion criteria for our cohort will be diagnosis of sepsis (995.91, 995.92) or septicemia (general codes of 038.**). The outcome of interest will be diagnosis of septic shock (785.52). 
+
+Of note, some patients have multiple stays. Each stay is currently included as a separate row in our data set. But we can look later and identify 1) any stays with sepsis prioritized completely and 2) for patients who never got a sepsis diagnosis, most recent stay. 
+
+Exclusion criteria to be assessed
+- Mortality after sepsis with no septic shock diagnosis
+
+Unfortunately we do not have time of diagnosis, simply the diagnoses assessed for billing purposes at the end of the hospital stay (i.e. discharge or death). However I think it's fair to assume that sepsis would precede septic shock diagnoses, and time to sepsis diagnosis is not of particular interest. Time to septic shock could be of interest for a time-based analysis, but unfortunately we do not have the data available for this.
+
+
+## Libraries
+```{r, message=F, warning=FALSE}
+library(magrittr) # Ceci n'est pas une %>% 
+library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse without a proper "system")
+library(ggplot2) # Visualization
+```
+
+
+### Data Import
+#### File Paths
+```{r}
+lib <- "C:/Users/Dominic DiSanto/Documents/MIMIC-III/mimic-iii-clinical-database-1.4/" # General location of all MIMIC files (on local machine)
+icd_fp <- paste0(lib, "Diagnoses_ICD.csv")
+```
+
+#### Import
+```{r}
+icd_raw <- read.csv(icd_fp, stringsAsFactors = F) %>% select(-ROW_ID)
+icd_raw <- icd_raw %>% mutate(UID = paste(SUBJECT_ID, "_", HADM_ID, sep="")) %>% select(UID, SUBJECT_ID, HADM_ID, SEQ_NUM, ICD9_CODE)
+icd_raw %>% head()
+```
+
+
+```{r}
+admit <- read.csv(paste0(lib, "ADMISSIONS.csv"))
+pts <- read.csv(paste0(lib, "PATIENTS.csv"))
+
+admit_dob <- pts %>% select(SUBJECT_ID, DOB) %>% merge(., admit, by="SUBJECT_ID") %>% mutate(Age=as.integer(difftime(ADMITTIME, DOB, units="weeks"))/52) %>% 
+  select(SUBJECT_ID, HADM_ID, Age) %>% 
+  mutate(Age=
+           case_when(
+             Age>100 ~ 90,
+             TRUE ~ Age # patients born pre-1900 had age fixed to 300, reducing down to the max age in this case
+           ))
+
+
+if(!(nrow(admit_dob) == nrow(admit))) {
+  print("Problem with merge of admissions and patient data. Do not continue, troubleshoot")
+  break
+}
+
+icd_dob <- merge(icd_raw, admit_dob, by=c("SUBJECT_ID", "HADM_ID")) 
+
+if(!(nrow(icd_raw)==nrow(icd_dob))){
+  print("Problem with merge of diagnosis and DOB data. Do not continue, troubleshoot")
+  break
+}
+  
+icd_adults <- icd_dob %>% filter(Age>=18)
+
+pts %>% select(SUBJECT_ID, DOB) %>% merge(., admit, by="SUBJECT_ID") %>% mutate(Age=as.integer(difftime(ADMITTIME, DOB, units="weeks"))/52) %>% 
+filter(floor(Age)>100)
+```
+
+### Identifying Patients with Sepsis or Septicemia Diagnosis
+
+```{r}
+icd_long_sepsis <- icd_adults %>% mutate(Sepsis=
+                                        case_when(
+                                          ICD9_CODE=="99591" |ICD9_CODE=="99592" ~ 1, 
+                                          TRUE ~ 0),
+                                      Septicemia=
+                                        case_when(
+                                          ICD9_CODE>='03800' & ICD9_CODE<"03900" ~ 1,
+                                          TRUE ~ 0),
+                                      SepticShock=
+                                        case_when(
+                                          ICD9_CODE=="78552" ~ 1, 
+                                          TRUE ~ 0)) %>% 
+                                mutate(InclusionDiag =
+                                        case_when(
+                                          Sepsis==1|Septicemia==1 ~ 1, 
+                                          TRUE ~ 0))
+
+icd_long_sepsis %>% head()
+icd_adults %>% nrow ==  icd_long_sepsis %>% nrow()
+```
+
+
+Creating our wide format data of the diagnoses of interest (for our outcome/inclusion, not including covariate diagnoses)
+
+```{r}
+icd_shock_tag <- icd_long_sepsis %>% distinct(UID, SUBJECT_ID, HADM_ID, SepticShock, .keep_all = T) %>% select(UID, SUBJECT_ID, HADM_ID, SepticShock, Age)
+icd_incl_tag <- icd_long_sepsis %>% distinct(UID, SUBJECT_ID, HADM_ID, InclusionDiag)
+icd_cemia_tag <- icd_long_sepsis %>% distinct(UID, SUBJECT_ID, HADM_ID, Septicemia)
+icd_sep_tag <- icd_long_sepsis %>% distinct(UID, SUBJECT_ID, HADM_ID, Sepsis)
+
+
+
+diagnoses_wide <- icd_shock_tag %>% select(UID, Age, SepticShock) %>% merge(., icd_incl_tag, by="UID", all=T) %>% 
+                      select(UID, Age, SepticShock, InclusionDiag) %>% merge(., icd_cemia_tag, by="UID", all=T) %>% 
+                      select(UID, Age, SepticShock, InclusionDiag, Septicemia) %>% merge(., icd_sep_tag, by="UID", all=T) %>% 
+                      select(UID, SUBJECT_ID, HADM_ID, Age, Sepsis, Septicemia, InclusionDiag, SepticShock) %>% arrange(SUBJECT_ID) %>%
+                      group_by(UID) %>% mutate(Sepsis=max(Sepsis), Septicemia=max(Septicemia), InclusionDiag=max(InclusionDiag), 
+                                               SepticShock=max(SepticShock),
+                                               Age=floor(Age)) %>%  distinct() %>% filter(InclusionDiag==1) %>% ungroup() 
+```
+
+
+
+Identifying patients with multiple stays 
+
+```{r}
+# diagnoses_wide %>% distinct(SUBJECT_ID, SepticShock, InclusionDiag, .keep_all = T) %>% arrange(SUBJECT_ID) %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1)
+
+# diagnoses_wide %>% filter(SUBJECT_ID %in% (diagnoses_wide %>% distinct(SUBJECT_ID, SepticShock, InclusionDiag, .keep_all = T) %>% arrange(SUBJECT_ID) %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1))[[1]])
+  # so we still have a few subjects with distinct stays, distinguished by different diagnoses of septic shock (i.e. they had one stay diagnosed with shock, and another not)
+  # I'm thinking we only include the septic shock stay. Could treat as two different stays but my inclination is that each stay would have essentially the same characteristics
+
+cohort <- diagnoses_wide %>% group_by(SUBJECT_ID) %>% filter(SepticShock==max(SepticShock)) %>% 
+                ungroup() %>% distinct(SUBJECT_ID, SepticShock, .keep_all = T)
+          # this line says give me the stay for which you had septicshock by using the max function grouped by SubjectID
+          # patients with multiple stays of the same septic shock status are taken care of by the distinct function. Those with a single stay are left unscathed
+
+cat("There are", nrow(cohort), "observations in our data frame, composed of", length(unique(cohort$SUBJECT_ID)), "unique patients.")
+```
+
+
+```{r}
+cohort %>% head()
+```
+  
+  
+## Cleaning Covariate/Predictor Data
+
+### Using Diagnoses Codes 
+
+#### Immunocompromised (HIV/AIDS, Cancer, CF, General Immune Disorders)
+
+##### Cancers (Malignant Neoplasms)
+```{r, eval=F}
+icd_adults %>% filter(ICD9_CODE>="140" & ICD9_CODE<"210") %>% distinct(ICD9_CODE)
+```
+
+```{r}
+cancer <- icd_adults %>% mutate(MalignantNP =
+                               case_when(
+                                 ICD9_CODE>="140" & ICD9_CODE<"210" ~ 1,
+                                 TRUE ~ 0
+                               )) %>% group_by(UID) %>% mutate(MalignantNP=max(MalignantNP)) %>% ungroup() %>% distinct(UID, MalignantNP)
+
+if("MalignantNP" %in% colnames(cohort)) cohort <- cohort %>% select(-MalignantNP)
+(cohort <- cancer %>%  merge(., cohort, by="UID", all.y=T)) %>% count(MalignantNP)
+```
+
+##### CF
+```{r}
+cf <-  icd_adults %>% mutate(CF=
+                     case_when(
+                       ICD9_CODE>="27700" & ICD9_CODE<="2771" ~ 1,
+                       TRUE ~ 0
+                     )) %>% group_by(UID) %>% mutate(CF=max(CF)) %>% distinct(UID, CF, .keep_all = T) %>% select(UID, CF) 
+
+if("CF" %in% colnames(cohort)) cohort <- cohort %>% select(-CF)
+(cohort <- cf %>%  merge(., cohort, by="UID", all.y=T)) %>% count(CF)
+```
+
+
+##### HIV/AIDS
+
+Codes taken from (these slides)[https://www.theaidsinstitute.org/sites/default/files/attachments/HIV-AIDS%20Care%20-%20Dx%20Codes_AETC-NCCC.pdf] found from searching for coding scheem
+
+```{r}
+hiv <-  icd_adults %>% mutate(HIV_AIDS=
+                     case_when(
+                       ICD9_CODE=="042" | ICD9_CODE=="V08" | ICD9_CODE=="07953" | ICD9_CODE=="79571"~ 1,
+                       TRUE ~ 0
+                     )) %>% group_by(UID) %>% mutate(HIV_AIDS=max(HIV_AIDS)) %>% distinct(UID, HIV_AIDS, .keep_all = T) %>% select(UID, HIV_AIDS) 
+
+
+if(("HIV_AIDS" %in% colnames(cohort))) cohort <- cohort %>% select(-HIV_AIDS)
+(cohort <- hiv %>%  merge(., cohort, by="UID", all.y=T)) %>% count(HIV_AIDS)
+```
+
+##### Unspecified Immune Diseases
+
+```{r}
+immune <-  icd_adults %>% mutate(ImmuneDisorder=
+                     case_when(
+                       ICD9_CODE>="27900" & ICD9_CODE<"28000" & nchar(ICD9_CODE)==5 ~ 1,
+                       TRUE ~ 0
+                     )) %>% group_by(UID) %>% mutate(ImmuneDisorder=max(ImmuneDisorder)) %>% distinct(UID, ImmuneDisorder, .keep_all = T) %>% select(UID, ImmuneDisorder) 
+
+if("ImmuneDisorder" %in% colnames(cohort)) cohort <- cohort %>% select(-ImmuneDisorder)
+(cohort <- immune %>% merge(., cohort, by="UID", all.y=T)) %>% count(ImmuneDisorder)
+```
+
+##### Aggregating into single immune variable
+
+```{r}
+cohort <- cohort %>% mutate(ImmunoCompr =
+                    case_when(
+                      MalignantNP==1 | CF==1 | ImmuneDisorder==1 | HIV_AIDS==1 ~ 1,
+                      TRUE ~ 0
+                    )) 
+
+cohort %>% count(ImmunoCompr)
+
+```
+
+
+#### COPD
+
+```{r}
+resp <-  icd_adults %>% mutate(RespDx=
+                     case_when(
+                       ICD9_CODE>=49000 & ICD9_CODE<49700 & nchar(ICD9_CODE)==5 ~ 1,
+                       TRUE ~ 0
+                     )) %>% group_by(UID) %>% mutate(RespDx=max(RespDx)) %>% distinct(UID, RespDx, .keep_all = T) %>% select(UID, RespDx) 
+
+if("RespDx" %in% colnames(cohort)) cohort <- cohort %>% select(-RespDx)
+(cohort <- resp %>% merge(., cohort, by="UID", all.y=T)) %>% count(RespDx)
+```
+
+
+
+#### Alc & Drug Use/Dependence
+
+Pulled partially from (this article)[https://www.ncbi.nlm.nih.gov/books/NBK367628/table/sb202.t4/] but not the drug specific coding, simply the code ranges.
+
+```{r}
+sub_abuse <-  icd_adults %>% mutate(Alc=
+                     case_when(
+                       (ICD9_CODE>=30300 & ICD9_CODE<30400 & nchar(ICD9_CODE)==5) | (ICD9_CODE>=29100 & ICD9_CODE<29200) ~ 1,
+                       TRUE ~ 0),
+                     Drug = 
+                     case_when(
+                       (ICD9_CODE>=30400 & ICD9_CODE<30500 & nchar(ICD9_CODE)==5) | (ICD9_CODE>=29200 & ICD9_CODE<29300) ~ 1,
+                       TRUE ~ 0),
+                     Sub_Abuse=case_when(Alc==1 | Drug==1 ~ 1,
+                                         TRUE ~ 0)
+                     ) %>% group_by(UID) %>% mutate(Sub_Abuse=max(Sub_Abuse)) %>% distinct(UID, Sub_Abuse, .keep_all = T) %>% select(UID, Alc, Drug, Sub_Abuse) 
+
+if("Sub_Abuse" %in% colnames(cohort)) cohort <- cohort %>% select(-Sub_Abuse)
+(cohort <- sub_abuse %>%  merge(., cohort, by="UID", all.y=T)) %>% count(Sub_Abuse)
+```
+
+
+#### Hypertension
+```{r}
+hypert <-  icd_adults %>% mutate(HT=
+                     case_when(
+                       ICD9_CODE=="4011" | ICD9_CODE=="4019" ~ 1,
+                       TRUE ~ 0)) %>% 
+  group_by(UID) %>% mutate(HT=max(HT)) %>% distinct(UID, HT, .keep_all = T) %>% select(UID, HT) 
+
+if("HT" %in% colnames(cohort)) cohort <- cohort %>% select(-HT)
+(cohort <- hypert %>%  merge(., cohort, by="UID", all.y=T)) %>% count(HT)
+```
+
+##### DMII
+
+```{r}
+dmii <-  icd_adults %>% mutate(DMII=
+                     case_when(
+                       ICD9_CODE=="25000" ~ 1,
+                       TRUE ~ 0)) %>% 
+  group_by(UID) %>% mutate(DMII=max(DMII)) %>% distinct(UID, DMII, .keep_all = T) %>% select(UID, DMII) 
+
+if("DMII" %in% colnames(cohort)) cohort <- cohort %>% select(-DMII)
+(cohort <- dmii %>% merge(., cohort, by="UID", all.y=T)) %>% count(DMII)
+```
+
+
+#### General Cardiovascular Disease
+
+
+
+```{r}
+cv_gen <- icd_adults %>% mutate(CVD =
+                               case_when(
+                                 ICD9_CODE=="412" | ICD9_CODE=="4292" | substr(ICD9_CODE, 1, 3) %in% c("414", "410", "416") ~ 1,
+                                 TRUE ~ 0
+                                 )
+                             ) %>% 
+  group_by(UID) %>% mutate(CVD=max(CVD)) %>% distinct(UID, CVD) 
+
+if("CVD" %in% colnames(cohort)) cohort <- cohort %>% select(-CVD)
+(cohort <- cv_gen %>% merge(., cohort, by="UID", all.y=T)) %>% count(CVD)
+```
+
+
+```{r, include=F, eval=F}
+# # event rate too low even when collapsing several trunk/upper body injuries together
+# thor <- icd_adults %>% mutate(ThorInj =
+#                              case_when(
+#                                # substr(ICD9_CODE, 1, 3) %in% c("866", "862", "875", "876", "826") ~ 1,
+#                                ICD9_CODE=="V4611" ~ 1,
+#                                TRUE ~ 0
+#                                )
+#                            ) %>% 
+#   group_by(UID) %>% mutate(ThorInj=max(ThorInj)) %>% ungroup() %>% distinct(UID, ThorInj)
+# 
+# cohort <- cohort %>% select(-ThorInj)
+# (cohort <- thor %>% merge(., cohort, by="UID", all.y=T)) %>% count(ThorInj)
+```
+
+
+
+#### General Trauma Admission 
+
+
+```{r}
+trauma <- icd_adults %>% mutate(TraumaDiag =
+                               case_when(
+                                 ICD9_CODE>="800" & ICD9_CODE<"960" ~ 1,
+                                 TRUE ~ 0
+                               )) %>% 
+  group_by(UID) %>% mutate(TraumaDiag=max(TraumaDiag)) %>% ungroup() %>% distinct(UID, TraumaDiag)
+
+if('TraumaDiag' %in% colnames(cohort)) cohort <- cohort %>% select(-TraumaDiag)
+(cohort <- trauma %>% merge(., cohort, by="UID", all.y=T)) %>% count(TraumaDiag)
+```
+
+
+```{r}
+cohort %>% ggplot(aes(x=Age, fill=as.factor(SepticShock))) +
+  geom_density(alpha=0.5) + theme_minimal() + 
+  ylab("Density") 
+```
+
+
+#### Ventilator/Intubation 
+```{r}
+(cpt <- read.csv(paste0(lib, "CPTEVENTS.csv"))) %>% head()
+
+vent <- cpt %>% mutate(VentTag=
+                 case_when(
+                   CPT_NUMBER==94002 ~ 1,
+                   TRUE ~ 0)) %>% group_by(SUBJECT_ID) %>% mutate(VentTag=max(VentTag)) %>% ungroup() %>% distinct(SUBJECT_ID, HADM_ID, VentTag) 
+
+
+test <- merge(vent, cohort, by=c("SUBJECT_ID", "HADM_ID"), all.y=T) %>% mutate(VentTag=
+                                                                                 case_when(
+                                                                                   is.na(VentTag) ~ 0,
+                                                                                   TRUE ~ VentTag))
+
+test %>% count(VentTag)
+```
+
+  
+
+
+#### Gender
+```{r}
+cohort <- cohort %>% select(-GENDER)
+
+cohort <- pts %>% select(SUBJECT_ID, GENDER) %>% merge(., cohort, by="SUBJECT_ID", all.y=T) %>% 
+  mutate(GENDER=(as.integer(GENDER=="M"))) %>% select(-UID)
+# 1 = Male, 0 = Female
+
+```
+
+
+
+
+### Data Cleaning and Export
+
+Removing completely superfluous columns
+
+
+##### Setting Aside 20% of our data for a true test ewt 
+```{r}
+set.seed(1714)
+
+test_indices <- sample(1:nrow(cohort), replace=F, size=ceiling(nrow(cohort)/5))
+
+cohort_test <- cohort[test_indices,]
+cohort_train <- cohort[-test_indices,]
+
+```
+
+Exporting data prior to removing any columns
+```{r}
+write.csv(cohort_test, file="cohort_test_unedit.csv", row.names = F)
+write.csv(cohort_train, file="cohort_train_unedit.csv", row.names = F)
+```
+
+Removing columns that were collapsed into others (e.g. immuno vairales, drug/alc)
+```{r}
+cohort_test_red <- cohort_test %>% select(-c(Alc, Drug, Sepsis, Septicemia, InclusionDiag, CF, HIV_AIDS, MalignantNP, ImmuneDisorder))
+cohort_train_red <- cohort_train %>% select(-c(Alc, Drug, Sepsis, Septicemia, InclusionDiag, CF, HIV_AIDS, MalignantNP, ImmuneDisorder))
+
+write.csv(cohort_test_red, file="cohort_test", row.names = F)
+write.csv(cohort_train_red, file="cohort_train.csv", row.names = F)
+```
+
+
