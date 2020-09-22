@@ -45,13 +45,13 @@ Definitions for ICD-9 codes most commonly accessed via [ICD-9 Data](https://www.
 **Additional variables included only in Unedited CSV Files**
 |Variable|Description|
 |---|---|
-|Alc | 1 if present (), otherwise 0 for absent|
-|Drug | 1 if present (), otherwise 0 for absent|
-|ImmuneDisorder | 1 if present (), otherwise 0 for absent|
-|HIV_AIDS | 1 if present (), otherwise 0 for absent|
-|CF | 1 if present (), otherwise 0 for absent|
-|MalignantNP | 1 if present (), otherwise 0 for absent|
-|Sepsis | 1 if present (), otherwise 0 for absent|
-|Septicemia | 1 if present (), otherwise 0 for absent|
-|InclusionDiag	 | Tag for if patients were included in analytic cohort. 1=Yes (if Sepsis or Septicemia were present/==1); 0=No (Both Sepsis & Septicemia absent/==0|
+|`Alc` | 1 if present (code between 303.00 to 304.99 or 291 to 291.99), otherwise 0 for absent|
+|`Drug` | 1 if present (codes from 304-305.99 or 292-292.99), otherwise 0 for absent|
+|`ImmuneDisorder` | Describes general but unspecificed immunocompromisation. 1 if present (codes from 279.00 to 279.99), otherwise 0 for absent|
+|`HIV_AIDS` | 1 if present (codes of 042, V08, 07953, 795.71), otherwise 0 for absent|
+|`CF` | 1 if present (code from 277.00 to 277.1), otherwise 0 for absent|
+|`MalignantNP` | 1 if present (codes from 140-209.99 ), otherwise 0 for absent|
+|`Sepsis` | 1 if present (codes of 955.91, 955.92), otherwise 0 for absent|
+|`Septicemia` | 1 if present (codes from 038.00 to 038.99), otherwise 0 for absent|
+|`InclusionDiag`	 | Tag for if patients were included in analytic cohort. 1=Yes (if Sepsis or Septicemia were present/==1); 0=No (Both Sepsis & Septicemia absent/==0|
 
